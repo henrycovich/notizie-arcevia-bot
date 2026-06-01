@@ -23,7 +23,7 @@ SOURCES = [
     {
         "name": "Vivere Senigallia",
         "type": "rss",
-        "url": "https://www.viveresenigallia.it/feed/",
+        "url": "https://www.viveresenigallia.it/rss/",
         "keyword": "arcevia",   # filtra solo notizie che contengono questa parola
         "emoji": "📰"
     },
