@@ -81,6 +81,15 @@ class DB:
         )
         self.conn.commit()
 
+    def last_24h(self):
+        """Restituisce tutte le notizie inviate nelle ultime 24 ore."""
+        return self.conn.execute("""
+            SELECT title, source, sent_at
+            FROM sent
+            WHERE sent_at >= datetime('now', '-24 hours')
+            ORDER BY source, sent_at DESC
+        """).fetchall()
+
     def close(self):
         self.conn.close()
 
@@ -193,19 +202,29 @@ def send_telegram(title, link, source, emoji, pub_date=""):
     _send_raw(text)
 
 # ============================================================
-#  INVIO MESSAGGIO RIEPILOGO ORARIO
+#  DIGEST SERALE
 # ============================================================
-def send_summary(new_count, sources_summary):
-    if new_count == 0:
+def send_digest(db):
+    """Invia un riepilogo di tutte le notizie delle ultime 24 ore."""
+    rows = db.last_24h()
+
+    if not rows:
+        print("[DIGEST] Nessuna notizia nelle ultime 24 ore, digest non inviato.")
         return
 
-    ora   = datetime.now().strftime("%H:%M")
-    lines = [f"📬 <b>{new_count} nuove notizie da Arcevia</b>  —  ore {ora}\n"]
-    for nome, count in sources_summary.items():
-        if count > 0:
-            lines.append(f"  • {nome}: {count}")
+    oggi  = datetime.now().strftime("%d/%m/%Y")
+    lines = [f"📋 <b>Riepilogo notizie Arcevia — {oggi}</b>\n"]
 
+    source_corrente = None
+    for title, source, _ in rows:
+        if source != source_corrente:
+            lines.append(f"\n<b>{source}</b>")
+            source_corrente = source
+        lines.append(f"  • {title}")
+
+    lines.append(f"\n<i>Totale: {len(rows)} notizie</i>")
     _send_raw("\n".join(lines))
+    print(f"[DIGEST] Inviato riepilogo con {len(rows)} notizie.")
 
 # ============================================================
 #  INVIO RAW
@@ -232,12 +251,10 @@ def check_news():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Controllo notizie...")
     db        = DB()
     new_count = 0
-    sources_summary = {}
 
     for source in SOURCES:
         articles = fetch_rss(source) if source["type"] == "rss" else fetch_scraping(source)
 
-        source_count = 0
         for article in articles:
             uid, already_sent = db.is_sent(article["link"], article["title"])
             if not already_sent:
@@ -250,13 +267,9 @@ def check_news():
                 )
                 db.mark_sent(uid, article["title"], article["source"])
                 print(f"[INVIATO] {article['title'][:60]}...")
-                new_count    += 1
-                source_count += 1
+                new_count += 1
                 time.sleep(1)
 
-        sources_summary[source["name"]] = source_count
-
-    send_summary(new_count, sources_summary)
     db.close()
     print(f"[FINE] {new_count} nuove notizie inviate.")
 
@@ -265,12 +278,17 @@ def check_news():
 # ============================================================
 if __name__ == "__main__":
     import sys
-    once = "--once" in sys.argv
 
-    print("🤖 Bot Notizie Arcevia avviato!")
-    if once:
+    if "--digest" in sys.argv:
+        print("📋 Invio digest serale...")
+        db = DB()
+        send_digest(db)
+        db.close()
+    elif "--once" in sys.argv:
+        print("🤖 Bot Notizie Arcevia avviato!")
         check_news()
     else:
+        print("🤖 Bot Notizie Arcevia avviato!")
         print("Controlla le notizie ogni ora. Premi Ctrl+C per fermare.\n")
         while True:
             check_news()
