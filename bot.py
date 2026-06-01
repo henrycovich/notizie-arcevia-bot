@@ -5,6 +5,7 @@ import os
 import time
 import hashlib
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 
 # ============================================================
@@ -85,10 +86,11 @@ def fetch_rss(source):
                     continue
 
             news.append({
-                "title": title,
-                "link": link,
-                "source": source["name"],
-                "emoji": source["emoji"],
+                "title":    title,
+                "link":     link,
+                "source":   source["name"],
+                "emoji":    source["emoji"],
+                "pub_date": entry.get("published", ""),  # data di pubblicazione
             })
     except Exception as e:
         print(f"[ERRORE RSS] {source['name']}: {e}")
@@ -120,10 +122,11 @@ def fetch_scraping(source):
                 continue
 
             news.append({
-                "title": title,
-                "link": link,
-                "source": source["name"],
-                "emoji": source["emoji"],
+                "title":    title,
+                "link":     link,
+                "source":   source["name"],
+                "emoji":    source["emoji"],
+                "pub_date": "",  # lo scraping non fornisce la data
             })
 
         # Rimuovi duplicati per link
@@ -140,27 +143,79 @@ def fetch_scraping(source):
     return news
 
 # ============================================================
-#  INVIO MESSAGGIO TELEGRAM
+#  FORMATTAZIONE DATA
 # ============================================================
-def send_telegram(title, link, source, emoji):
+def format_date(pub_date):
+    """Converte la data RSS in formato leggibile (es. '01 giu 2025')."""
+    if not pub_date:
+        return ""
+    try:
+        dt = parsedate_to_datetime(pub_date)
+        # Mesi in italiano
+        mesi = {
+            "Jan": "gen", "Feb": "feb", "Mar": "mar", "Apr": "apr",
+            "May": "mag", "Jun": "giu", "Jul": "lug", "Aug": "ago",
+            "Sep": "set", "Oct": "ott", "Nov": "nov", "Dec": "dic"
+        }
+        data_en = dt.strftime("%d %b %Y")
+        for en, it in mesi.items():
+            data_en = data_en.replace(en, it)
+        return data_en
+    except Exception:
+        return ""
+
+# ============================================================
+#  INVIO MESSAGGIO TELEGRAM — singola notizia
+# ============================================================
+def send_telegram(title, link, source, emoji, pub_date=""):
+    date_str = format_date(pub_date)
+    footer   = f"📅 {date_str}  ·  " if date_str else ""
+
     text = (
-        f"{emoji} <b>{source}</b>\n"
-        f"📌 {title}\n"
-        f"🔗 <a href='{link}'>Leggi l'articolo</a>"
+        f"<b>{emoji} {source}</b>\n"
+        f"\n"
+        f"{title}\n"
+        f"\n"
+        f"<i>{footer}<a href='{link}'>Leggi l'articolo →</a></i>"
     )
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    _send_raw(text)
+
+# ============================================================
+#  INVIO MESSAGGIO RIEPILOGO ORARIO
+# ============================================================
+def send_summary(new_count, sources_summary):
+    """Invia un messaggio riassuntivo al termine del ciclo.
+
+    sources_summary è un dict { "Nome fonte": conteggio_articoli }
+    """
+    if new_count == 0:
+        return  # nessuna novità, nessun riepilogo
+
+    ora = datetime.now().strftime("%H:%M")
+
+    lines = [f"📬 <b>{new_count} nuove notizie da Arcevia</b>  —  ore {ora}\n"]
+    for nome, count in sources_summary.items():
+        if count > 0:
+            lines.append(f"  • {nome}: {count}")
+
+    text = "\n".join(lines)
+    _send_raw(text)
+
+# ============================================================
+#  INVIO RAW (usato da send_telegram e send_summary)
+# ============================================================
+def _send_raw(text):
+    url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
+        "chat_id":                  TELEGRAM_CHAT_ID,
+        "text":                     text,
+        "parse_mode":               "HTML",
         "disable_web_page_preview": False,
     }
     try:
         r = requests.post(url, data=data, timeout=10)
         if r.status_code != 200:
             print(f"[ERRORE TELEGRAM] {r.text}")
-        else:
-            print(f"[INVIATO] {title[:60]}...")
     except Exception as e:
         print(f"[ERRORE INVIO] {e}")
 
@@ -169,8 +224,9 @@ def send_telegram(title, link, source, emoji):
 # ============================================================
 def check_news():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Controllo notizie...")
-    sent = load_sent()
+    sent      = load_sent()
     new_count = 0
+    sources_summary = {}  # { "Nome fonte": n_articoli_nuovi }
 
     for source in SOURCES:
         if source["type"] == "rss":
@@ -178,6 +234,7 @@ def check_news():
         else:
             articles = fetch_scraping(source)
 
+        source_count = 0
         for article in articles:
             uid = make_id(article["link"], article["title"])
             if uid not in sent:
@@ -185,11 +242,19 @@ def check_news():
                     article["title"],
                     article["link"],
                     article["source"],
-                    article["emoji"]
+                    article["emoji"],
+                    article.get("pub_date", ""),
                 )
+                print(f"[INVIATO] {article['title'][:60]}...")
                 sent.append(uid)
-                new_count += 1
+                new_count   += 1
+                source_count += 1
                 time.sleep(1)  # pausa tra un messaggio e l'altro
+
+        sources_summary[source["name"]] = source_count
+
+    # ── MIGLIORAMENTO 2: messaggio riepilogativo ──
+    send_summary(new_count, sources_summary)
 
     save_sent(sent)
     print(f"[FINE] {new_count} nuove notizie inviate.")
@@ -210,8 +275,3 @@ if __name__ == "__main__":
             check_news()
             print("Prossimo controllo tra 60 minuti...")
             time.sleep(3600)
-
-# patch: support --once flag
-import sys as _sys
-if __name__ == "__main__" and "--once" in _sys.argv:
-    pass  # handled below
