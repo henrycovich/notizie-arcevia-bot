@@ -10,8 +10,8 @@ from bs4 import BeautifulSoup
 # ============================================================
 #  CONFIGURAZIONE — inserisci qui i tuoi dati
 # ============================================================
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "IL_TUO_TOKEN_QUI")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IL_TUO_CHAT_ID_QUI")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "8604860145:AAGt5r5SzoWd0eb9dvHFVrIQQshWO_opaLM")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "8604860145")
 
 # File dove salviamo le notizie già inviate (evita duplicati)
 SENT_FILE = "sent_news.json"
@@ -198,9 +198,20 @@ def check_news():
 #  AVVIO
 # ============================================================
 if __name__ == "__main__":
+    import sys
+    once = "--once" in sys.argv  # GitHub Actions usa --once
+
     print("🤖 Bot Notizie Arcevia avviato!")
-    print("Controlla le notizie ogni ora. Premi Ctrl+C per fermare.\n")
-    while True:
+    if once:
         check_news()
-        print("Prossimo controllo tra 60 minuti...")
-        time.sleep(3600)  # 1 ora
+    else:
+        print("Controlla le notizie ogni ora. Premi Ctrl+C per fermare.\n")
+        while True:
+            check_news()
+            print("Prossimo controllo tra 60 minuti...")
+            time.sleep(3600)
+
+# patch: support --once flag
+import sys as _sys
+if __name__ == "__main__" and "--once" in _sys.argv:
+    pass  # handled below
