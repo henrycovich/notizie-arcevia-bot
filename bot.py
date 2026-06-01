@@ -10,8 +10,8 @@ from bs4 import BeautifulSoup
 # ============================================================
 #  CONFIGURAZIONE — inserisci qui i tuoi dati
 # ============================================================
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "IL_TUO_TOKEN_QUI")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IL_TUO_CHAT_ID_QUI")
 
 # File dove salviamo le notizie già inviate (evita duplicati)
 SENT_FILE = "sent_news.json"
