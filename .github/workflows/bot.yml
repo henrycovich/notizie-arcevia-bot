@@ -1,0 +1,35 @@
+name: Notizie Arcevia Bot
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # ogni ora esatta
+  workflow_dispatch:       # permette di avviarlo manualmente
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Scarica il codice
+        uses: actions/checkout@v4
+
+      - name: Installa Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installa le dipendenze
+        run: pip install -r requirements.txt
+
+      - name: Salva notizie già inviate (cache)
+        uses: actions/cache@v4
+        with:
+          path: sent_news.json
+          key: sent-news-cache
+          restore-keys: sent-news-
+
+      - name: Esegui il bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --once  # esegui una sola volta e termina
