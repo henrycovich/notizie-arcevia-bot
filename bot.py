@@ -1,9 +1,9 @@
 import feedparser
 import requests
-import json
+import sqlite3
+import hashlib
 import os
 import time
-import hashlib
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
@@ -14,8 +14,7 @@ from bs4 import BeautifulSoup
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "IL_TUO_TOKEN_QUI")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "IL_TUO_CHAT_ID_QUI")
 
-# File dove salviamo le notizie già inviate (evita duplicati)
-SENT_FILE = "sent_news.json"
+DB_PATH = "news.db"
 
 # ============================================================
 #  FONTI DI NOTIZIE
@@ -25,14 +24,14 @@ SOURCES = [
         "name": "Vivere Senigallia",
         "type": "rss",
         "url": "https://www.viveresenigallia.it/rss/",
-        "keyword": "arcevia",   # filtra solo notizie che contengono questa parola
+        "keyword": "arcevia",
         "emoji": "📰"
     },
     {
         "name": "Ancona Today",
         "type": "rss",
         "url": "https://www.anconatoday.it/rss/arcevia.xml",
-        "keyword": None,  # già filtrato per Arcevia dall'URL
+        "keyword": None,
         "emoji": "🗞️"
     },
     {
@@ -52,20 +51,38 @@ SOURCES = [
 ]
 
 # ============================================================
-#  GESTIONE NOTIZIE GIÀ INVIATE
+#  DATABASE SQLite
 # ============================================================
-def load_sent():
-    if os.path.exists(SENT_FILE):
-        with open(SENT_FILE, "r") as f:
-            return json.load(f)
-    return []
+class DB:
+    def __init__(self, path=DB_PATH):
+        self.conn = sqlite3.connect(path)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS sent (
+                id       TEXT PRIMARY KEY,
+                title    TEXT,
+                source   TEXT,
+                sent_at  TEXT
+            )
+        """)
+        self.conn.commit()
 
-def save_sent(sent):
-    with open(SENT_FILE, "w") as f:
-        json.dump(sent[-500:], f)  # tieni solo le ultime 500
+    def is_sent(self, url, title):
+        """Restituisce (uid, già_inviato)."""
+        uid = hashlib.md5(f"{url}{title}".encode()).hexdigest()
+        row = self.conn.execute(
+            "SELECT 1 FROM sent WHERE id = ?", (uid,)
+        ).fetchone()
+        return uid, bool(row)
 
-def make_id(url, title):
-    return hashlib.md5(f"{url}{title}".encode()).hexdigest()
+    def mark_sent(self, uid, title, source):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sent (id, title, source, sent_at) VALUES (?, ?, ?, ?)",
+            (uid, title, source, datetime.now().isoformat())
+        )
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
 
 # ============================================================
 #  LETTURA FEED RSS
@@ -74,12 +91,11 @@ def fetch_rss(source):
     news = []
     try:
         feed = feedparser.parse(source["url"])
-        for entry in feed.entries[:10]:  # ultimi 10 articoli
+        for entry in feed.entries[:10]:
             title = entry.get("title", "")
             link  = entry.get("link", "")
             desc  = entry.get("summary", "")
 
-            # Filtra per parola chiave se necessario
             if source["keyword"]:
                 kw = source["keyword"].lower()
                 if kw not in title.lower() and kw not in desc.lower():
@@ -90,7 +106,7 @@ def fetch_rss(source):
                 "link":     link,
                 "source":   source["name"],
                 "emoji":    source["emoji"],
-                "pub_date": entry.get("published", ""),  # data di pubblicazione
+                "pub_date": entry.get("published", ""),
             })
     except Exception as e:
         print(f"[ERRORE RSS] {source['name']}: {e}")
@@ -106,12 +122,10 @@ def fetch_scraping(source):
         r = requests.get(source["url"], headers=headers, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Cerca tutti i link articolo nella pagina
         for a in soup.find_all("a", href=True):
             title = a.get_text(strip=True)
             link  = a["href"]
 
-            # Salta link troppo corti o di navigazione
             if len(title) < 20:
                 continue
             if not link.startswith("http"):
@@ -126,12 +140,11 @@ def fetch_scraping(source):
                 "link":     link,
                 "source":   source["name"],
                 "emoji":    source["emoji"],
-                "pub_date": "",  # lo scraping non fornisce la data
+                "pub_date": "",
             })
 
         # Rimuovi duplicati per link
-        seen = set()
-        unique = []
+        seen, unique = set(), []
         for n in news:
             if n["link"] not in seen:
                 seen.add(n["link"])
@@ -151,7 +164,6 @@ def format_date(pub_date):
         return ""
     try:
         dt = parsedate_to_datetime(pub_date)
-        # Mesi in italiano
         mesi = {
             "Jan": "gen", "Feb": "feb", "Mar": "mar", "Apr": "apr",
             "May": "mag", "Jun": "giu", "Jul": "lug", "Aug": "ago",
@@ -184,25 +196,19 @@ def send_telegram(title, link, source, emoji, pub_date=""):
 #  INVIO MESSAGGIO RIEPILOGO ORARIO
 # ============================================================
 def send_summary(new_count, sources_summary):
-    """Invia un messaggio riassuntivo al termine del ciclo.
-
-    sources_summary è un dict { "Nome fonte": conteggio_articoli }
-    """
     if new_count == 0:
-        return  # nessuna novità, nessun riepilogo
+        return
 
-    ora = datetime.now().strftime("%H:%M")
-
+    ora   = datetime.now().strftime("%H:%M")
     lines = [f"📬 <b>{new_count} nuove notizie da Arcevia</b>  —  ore {ora}\n"]
     for nome, count in sources_summary.items():
         if count > 0:
             lines.append(f"  • {nome}: {count}")
 
-    text = "\n".join(lines)
-    _send_raw(text)
+    _send_raw("\n".join(lines))
 
 # ============================================================
-#  INVIO RAW (usato da send_telegram e send_summary)
+#  INVIO RAW
 # ============================================================
 def _send_raw(text):
     url  = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -224,20 +230,17 @@ def _send_raw(text):
 # ============================================================
 def check_news():
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Controllo notizie...")
-    sent      = load_sent()
+    db        = DB()
     new_count = 0
-    sources_summary = {}  # { "Nome fonte": n_articoli_nuovi }
+    sources_summary = {}
 
     for source in SOURCES:
-        if source["type"] == "rss":
-            articles = fetch_rss(source)
-        else:
-            articles = fetch_scraping(source)
+        articles = fetch_rss(source) if source["type"] == "rss" else fetch_scraping(source)
 
         source_count = 0
         for article in articles:
-            uid = make_id(article["link"], article["title"])
-            if uid not in sent:
+            uid, already_sent = db.is_sent(article["link"], article["title"])
+            if not already_sent:
                 send_telegram(
                     article["title"],
                     article["link"],
@@ -245,18 +248,16 @@ def check_news():
                     article["emoji"],
                     article.get("pub_date", ""),
                 )
+                db.mark_sent(uid, article["title"], article["source"])
                 print(f"[INVIATO] {article['title'][:60]}...")
-                sent.append(uid)
-                new_count   += 1
+                new_count    += 1
                 source_count += 1
-                time.sleep(1)  # pausa tra un messaggio e l'altro
+                time.sleep(1)
 
         sources_summary[source["name"]] = source_count
 
-    # ── MIGLIORAMENTO 2: messaggio riepilogativo ──
     send_summary(new_count, sources_summary)
-
-    save_sent(sent)
+    db.close()
     print(f"[FINE] {new_count} nuove notizie inviate.")
 
 # ============================================================
@@ -264,7 +265,7 @@ def check_news():
 # ============================================================
 if __name__ == "__main__":
     import sys
-    once = "--once" in sys.argv  # GitHub Actions usa --once
+    once = "--once" in sys.argv
 
     print("🤖 Bot Notizie Arcevia avviato!")
     if once:
