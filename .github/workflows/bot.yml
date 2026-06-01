@@ -2,8 +2,18 @@ name: Notizie Arcevia Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'  # ogni ora esatta
-  workflow_dispatch:       # permette di avviarlo manualmente
+    - cron: '0 * * * *'   # ogni ora — fetch notizie
+    - cron: '0 19 * * *'  # 19:00 UTC = 20:00 ora solare / 21:00 ora legale
+  workflow_dispatch:        # avvio manuale
+    inputs:
+      mode:
+        description: 'Modalità di esecuzione'
+        required: true
+        default: 'once'
+        type: choice
+        options:
+          - once
+          - digest
 
 jobs:
   run-bot:
@@ -21,15 +31,23 @@ jobs:
       - name: Installa le dipendenze
         run: pip install -r requirements.txt
 
-      - name: Salva notizie già inviate (cache)
+      - name: Ripristina database notizie (cache)
         uses: actions/cache@v4
         with:
-          path: sent_news.json
-          key: sent-news-cache
-          restore-keys: sent-news-
+          path: news.db
+          key: news-db-cache
+          restore-keys: news-db-
 
-      - name: Esegui il bot
+      - name: Fetch notizie (ogni ora)
+        if: github.event.schedule == '0 * * * *' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'once')
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot.py --once  # esegui una sola volta e termina
+        run: python bot.py --once
+
+      - name: Digest serale (19:00 UTC)
+        if: github.event.schedule == '0 19 * * *' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'digest')
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python bot.py --digest
